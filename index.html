@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Advanced Sellers.json Rank Checker</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 1200px; margin: auto; }
+    .container { display: grid; grid-template-columns: 1fr 1fr; grid-gap: 20px; margin-bottom: 20px;}
+    .control-group, .summary-group { border: 1px solid #ccc; padding: 15px; border-radius: 8px; }
+    h2, h3 { margin-top: 0; }
+    input, button, select { margin: 5px 0; padding: 8px; width: 100%; box-sizing: border-box; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; white-space: nowrap; }
+    th { background: #f4f4f4; cursor: pointer; }
+    .loader { display: none; margin: 10px 0; }
+    #progressContainer { background: #eee; height: 24px; border-radius: 8px; overflow: hidden; display: none; margin-top: 10px; }
+    #progressBar { height: 100%; background: #4caf50; width: 0%; text-align: center; color: white; transition: width 0.2s ease; }
+    .sort-indicator { float: right; }
+    .filter-controls { display: grid; grid-template-columns: 1fr 1fr; grid-gap: 10px; align-items: center; margin-top: 10px; }
+    .checkbox-label { display: flex; align-items: center; gap: 10px; }
+    #exportBtn { background-color: #28a745; color: white; }
+  </style>
+</head>
+<body>
+
+<h2>📊 Advanced Sellers.json Rank Checker</h2>
+
+<div class="container">
+  <div class="control-group">
+    <h3>Configuration</h3>
+    <label for="sellersUrl">Sellers.json URL:</label>
+    <input type="text" id="sellersUrl" placeholder="https://example.com/sellers.json">
+    <button onclick="processSellers()">Check Rankings</button>
+    <div id="progressContainer"><div id="progressBar">0%</div></div>
+    <div class="loader" id="loader">Loading and processing...</div>
+  </div>
+
+  <div class="summary-group">
+    <h3>Summary</h3>
+    <p id="summaryStats">Run a check to see statistics.</p>
+  </div>
+</div>
+
+<div class="control-group">
+    <h3>Filter & Export</h3>
+    <input type="text" id="searchBox" oninput="applyFiltersAndRender()" placeholder="Search by Domain, Name, or Seller ID...">
+    <div class="filter-controls">
+        <div>
+            <label for="minRank">Min Rank:</label>
+            <input type="number" id="minRank" oninput="applyFiltersAndRender()" placeholder="e.g., 1">
+        </div>
+        <div>
+            <label for="maxRank">Max Rank:</label>
+            <input type="number" id="maxRank" oninput="applyFiltersAndRender()" placeholder="e.g., 10000">
+        </div>
+    </div>
+    <div class="checkbox-label">
+        <input type="checkbox" id="showUnranked" onchange="applyFiltersAndRender()">
+        <label for="showUnranked">Show unranked domains</label>
+    </div>
+    <button id="exportBtn" onclick="exportToCSV()">Export Visible Data to CSV</button>
+</div>
+
+
+<table id="resultsTable" style="display:none;">
+  <thead>
+    <tr>
+      <th onclick="sortTable(0)">Rank <span class="sort-indicator"></span></th>
+      <th onclick="sortTable(1)">Domain <span class="sort-indicator"></span></th>
+      <th onclick="sortTable(2)">Name <span class="sort-indicator"></span></th>
+      <th onclick="sortTable(3)">Seller ID <span class="sort-indicator"></span></th>
+    </tr>
+  </thead>
+  <tbody id="resultsBody"></tbody>
+</table>
+
+<script>
+  let trancoRanks = new Map();
+  let allSellersData = [];
+  let currentViewData = [];
+  let sortColumn = 0;
+  let sortAscending = true;
+  const TRANCO_URL = 'https://tranco-list.eu/top-1m.csv'; // Direct link to CSV
+
+  // Feature 7: Remember Last URL
+  document.addEventListener('DOMContentLoaded', () => {
+    const lastUrl = localStorage.getItem('lastSellersUrl');
+    if (lastUrl) {
+      document.getElementById('sellersUrl').value = lastUrl;
+    }
+    loadTrancoList(); // Pre-load Tranco list on page load
+  });
+
+  async function loadTrancoList() {
+    const loader = document.getElementById('loader');
+    loader.style.display = 'block';
+    loader.textContent = "Loading Tranco top 1M list...";
+    try {
+      const corsProxy = "https://corsproxy.io/?";
+      const response = await fetch(corsProxy + encodeURIComponent(TRANCO_URL));
+      if (!response.ok) throw new Error(`Failed to fetch Tranco list: ${response.statusText}`);
+      const text = await response.text();
+      const lines = text.split("\n");
+      for (const line of lines) {
+        const [rank, domain] = line.trim().split(",");
+        if (rank && domain) {
+          trancoRanks.set(domain.toLowerCase(), parseInt(rank));
+        }
+      }
+      console.log("✅ Tranco list loaded with " + trancoRanks.size + " entries.");
+    } catch (error) {
+      console.error("Error loading Tranco list:", error);
+      alert("❌ Failed to auto-load the Tranco list. Please check the console.");
+    } finally {
+        loader.style.display = 'none';
+        loader.textContent = "Loading and processing...";
+    }
+  }
+
+  async function processSellers() {
+    if (trancoRanks.size === 0) {
+      alert("Tranco list is still loading. Please try again in a moment.");
+      return;
+    }
+    
+    const url = document.getElementById("sellersUrl").value.trim();
+    const loader = document.getElementById("loader");
+    const table = document.getElementById("resultsTable");
+    const progressBar = document.getElementById("progressBar");
+    const progressContainer = document.getElementById("progressContainer");
+
+    progressContainer.style.display = "block";
+    updateProgress(0);
+    loader.style.display = "block";
+
+    if (!url) {
+      alert("❌ Please enter a sellers.json URL.");
+      loader.style.display = "none";
+      return;
+    }
+
+    try {
+      const corsProxy = "https://corsproxy.io/?";
+      const res = await fetch(corsProxy + encodeURIComponent(url));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      localStorage.setItem('lastSellersUrl', url); // Save successful URL
+      const json = await res.json();
+
+      let sellers = Array.isArray(json) ? json : json.sellers || [];
+      
+      // Feature 1: Summary Statistics - Initialization
+      let stats = { total: sellers.length, publisher: 0, ranked: 0 };
+
+      allSellersData = sellers
+        .map((s, index) => {
+          updateProgress((index + 1) / sellers.length * 100);
+          if (s.seller_type === "PUBLISHER" && s.domain) {
+            stats.publisher++;
+            const rank = trancoRanks.get(s.domain.toLowerCase());
+            if (rank !== undefined) {
+              stats.ranked++;
+              return { rank: rank, domain: s.domain, name: s.name, seller_id: s.seller_id };
+            }
+            return { rank: Infinity, domain: s.domain, name: s.name, seller_id: s.seller_id }; // Unranked
+          }
+          return null;
+        }).filter(Boolean); // Remove null entries (non-publishers)
+      
+      updateSummaryStats(stats);
+      sortColumn = 0;
+      sortAscending = true;
+      applyFiltersAndRender();
+
+      if (allSellersData.length > 0) {
+        table.style.display = "table";
+      } else {
+        alert("✅ No PUBLISHER domains found in this sellers.json.");
+      }
+
+    } catch (err) {
+      console.error(err);
+      alert("❌ Failed to fetch or process sellers.json. Check the URL and console.");
+    } finally {
+      loader.style.display = "none";
+      updateProgress(100);
+    }
+  }
+
+  function updateSummaryStats(stats) {
+      const summaryP = document.getElementById('summaryStats');
+      const percentage = stats.publisher > 0 ? ((stats.ranked / stats.publisher) * 100).toFixed(1) : 0;
+      summaryP.innerHTML = `
+        Total Sellers: <strong>${stats.total}</strong><br>
+        Publisher Entries: <strong>${stats.publisher}</strong><br>
+        Ranked Publishers: <strong>${stats.ranked} (${percentage}%)</strong>
+      `;
+  }
+  
+  // Features 2, 4, 5: Filtering Logic
+  function applyFiltersAndRender() {
+    const showUnranked = document.getElementById('showUnranked').checked;
+    const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+    const minRank = parseInt(document.getElementById('minRank').value) || 0;
+    const maxRank = parseInt(document.getElementById('maxRank').value) || Infinity;
+    
+    let filteredData = allSellersData.filter(item => {
+        const isRanked = item.rank !== Infinity;
+        const rankMatch = isRanked ? (item.rank >= minRank && item.rank <= maxRank) : false;
+
+        if (!showUnranked && !isRanked) return false;
+        if (showUnranked && !isRanked) {
+             // For unranked items, ignore rank filter but apply search filter
+        } else if (!rankMatch) {
+            return false;
+        }
+
+        const searchMatch = !searchTerm || 
+            item.domain.toLowerCase().includes(searchTerm) ||
+            (item.name && item.name.toLowerCase().includes(searchTerm)) ||
+            (item.seller_id && item.seller_id.toLowerCase().includes(searchTerm));
+        
+        return searchMatch;
+    });
+
+    currentViewData = filteredData;
+    sortTable(sortColumn, true); // Re-apply current sort
+  }
+
+  function renderTable() {
+    const resultsBody = document.getElementById("resultsBody");
+    resultsBody.innerHTML = "";
+    for (const item of currentViewData) {
+      const row = document.createElement("tr");
+      const rankDisplay = item.rank === Infinity ? "Unranked" : item.rank;
+      row.innerHTML = `<td>${rankDisplay}</td><td>${item.domain || ''}</td><td>${item.name || ''}</td><td>${item.seller_id || ''}</td>`;
+      resultsBody.appendChild(row);
+    }
+  }
+
+  function sortTable(columnIndex, maintainDirection = false) {
+    if (!maintainDirection) {
+        if (sortColumn === columnIndex) {
+            sortAscending = !sortAscending;
+        } else {
+            sortColumn = columnIndex;
+            sortAscending = true;
+        }
+    }
+
+    currentViewData.sort((a, b) => {
+      let valA, valB;
+      switch(columnIndex) {
+        case 0: valA = a.rank; valB = b.rank; break;
+        case 1: valA = a.domain || ''; valB = b.domain || ''; break;
+        case 2: valA = a.name || ''; valB = b.name || ''; break;
+        case 3: valA = a.seller_id || ''; valB = b.seller_id || ''; break;
+      }
+      
+      if (valA < valB) return sortAscending ? -1 : 1;
+      if (valA > valB) return sortAscending ? 1 : -1;
+      return 0;
+    });
+
+    updateSortIndicators();
+    renderTable();
+  }
+
+  function updateSortIndicators() {
+    const headers = document.querySelectorAll("#resultsTable th");
+    headers.forEach((th, index) => {
+      const indicator = th.querySelector(".sort-indicator");
+      indicator.textContent = (index === sortColumn) ? (sortAscending ? " ▲" : " ▼") : "";
+    });
+  }
+
+  function updateProgress(percent) {
+    const bar = document.getElementById("progressBar");
+    bar.style.width = percent + "%";
+    bar.innerText = Math.round(percent) + "%";
+  }
+
+  // Feature 6: Export to CSV
+  function exportToCSV() {
+    const headers = ["Rank", "Domain", "Name", "Seller ID"];
+    const rows = currentViewData.map(item => [
+        item.rank === Infinity ? "Unranked" : item.rank,
+        item.domain,
+        item.name,
+        item.seller_id
+    ]);
+
+    let csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n" 
+        + rows.map(e => e.map(val => `"${String(val || '').replace(/"/g, '""')}"`).join(",")).join("\n");
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "sellers_data.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+</script>
+
+</body>
+</html>
